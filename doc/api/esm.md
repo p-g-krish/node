@@ -166,7 +166,7 @@ _ESM_RESOLVE_:
 >    1. Set _resolvedURL_ to the result of parsing and reserializing
 >       _specifier_ as a URL.
 > 1. Otherwise, if _specifier_ starts with _"/"_, _"./"_ or _"../"_ then,
->    1. Set _resolvedURL_ to the URL resolution of _specifier_ to _parentURL_.
+>    1. Set _resolvedURL_ to the URL resolution of _specifier_ relative to _parentURL_.
 > 1. Otherwise,
 >    1. Note: _specifier_ is now a bare specifier.
 >    1. Set _resolvedURL_ the result of
@@ -178,7 +178,7 @@ _ESM_RESOLVE_:
 **PACKAGE_RESOLVE**(_packageSpecifier_, _parentURL_)
 > 1. Assert: _packageSpecifier_ is a bare specifier.
 > 1. If _packageSpecifier_ is a Node.js builtin module then,
->    1. Return _"node:${packageName}"_.
+>    1. Return _"node:${packageSpecifier}"_.
 > 1. Set _parentURL_ to the parent folder URL of _parentURL_.
 > 1. While _parentURL_ contains a non-empty _pathname_,
 >    1. Let _packageURL_ be the URL resolution of
