@@ -12,20 +12,23 @@
 #include "src/interface-descriptors.h"
 #include "src/interpreter/bytecodes.h"
 #include "src/interpreter/interpreter-generator.h"
+#include "src/interpreter/interpreter.h"
 #include "src/isolate.h"
 #include "src/objects-inl.h"
 #include "src/objects/shared-function-info.h"
+#include "src/objects/smi.h"
 
 namespace v8 {
 namespace internal {
 
 // Forward declarations for C++ builtins.
 #define FORWARD_DECLARE(Name) \
-  Object* Builtin_##Name(int argc, Object** args, Isolate* isolate);
+  Object* Builtin_##Name(int argc, Address* args, Isolate* isolate);
 BUILTIN_LIST_C(FORWARD_DECLARE)
 #undef FORWARD_DECLARE
 
 namespace {
+
 void PostBuildProfileAndTracing(Isolate* isolate, Code* code,
                                 const char* name) {
   PROFILE(isolate, CodeCreateEvent(CodeEventListener::BUILTIN_TAG,
@@ -48,10 +51,11 @@ AssemblerOptions BuiltinAssemblerOptions(Isolate* isolate,
     return options;
   }
 
-  CodeRange* code_range = isolate->heap()->memory_allocator()->code_range();
+  const base::AddressRegion& code_range =
+      isolate->heap()->memory_allocator()->code_range();
   bool pc_relative_calls_fit_in_code_range =
-      code_range->valid() &&
-      code_range->size() <= kMaxPCRelativeCodeRangeInMB * MB;
+      !code_range.is_empty() &&
+      code_range.size() <= kMaxPCRelativeCodeRangeInMB * MB;
 
   options.isolate_independent_code = true;
   options.use_pc_relative_calls_and_jumps = pc_relative_calls_fit_in_code_range;
@@ -72,7 +76,7 @@ Handle<Code> BuildPlaceholder(Isolate* isolate, int32_t builtin_index) {
     FrameScope scope(&masm, StackFrame::NONE);
     // The contents of placeholder don't matter, as long as they don't create
     // embedded constants or external references.
-    masm.Move(kJavaScriptCallCodeStartRegister, Smi::kZero);
+    masm.Move(kJavaScriptCallCodeStartRegister, Smi::zero());
     masm.Call(kJavaScriptCallCodeStartRegister);
   }
   CodeDesc desc;
@@ -180,6 +184,7 @@ Code* BuildWithCodeStubAssemblerCS(Isolate* isolate, int32_t builtin_index,
   PostBuildProfileAndTracing(isolate, *code, name);
   return *code;
 }
+
 }  // anonymous namespace
 
 // static
@@ -246,26 +251,24 @@ void SetupIsolateDelegate::ReplacePlaceholders(Isolate* isolate) {
   }
 }
 
-#ifdef V8_EMBEDDED_BYTECODE_HANDLERS
 namespace {
+
 Code* GenerateBytecodeHandler(Isolate* isolate, int builtin_index,
-                              const char* name, interpreter::Bytecode bytecode,
-                              interpreter::OperandScale operand_scale) {
-  if (!interpreter::Bytecodes::BytecodeHasHandler(bytecode, operand_scale)) {
-    // TODO(v8:8068): Consider returning something else to avoid placeholders
-    // being serialized with the snapshot.
-    return nullptr;
-  }
+                              const char* name,
+                              interpreter::OperandScale operand_scale,
+                              interpreter::Bytecode bytecode) {
+  DCHECK(interpreter::Bytecodes::BytecodeHasHandler(bytecode, operand_scale));
 
   Handle<Code> code = interpreter::GenerateBytecodeHandler(
-      isolate, bytecode, operand_scale, builtin_index);
+      isolate, bytecode, operand_scale, builtin_index,
+      BuiltinAssemblerOptions(isolate, builtin_index));
 
   PostBuildProfileAndTracing(isolate, *code, name);
 
   return *code;
 }
+
 }  // namespace
-#endif
 
 // static
 void SetupIsolateDelegate::SetupBuiltinsInternal(Isolate* isolate) {
@@ -309,19 +312,10 @@ void SetupIsolateDelegate::SetupBuiltinsInternal(Isolate* isolate) {
       CallDescriptors::InterfaceDescriptor, #Name, 1);     \
   AddBuiltin(builtins, index++, code);
 
-#define BUILD_BCH_WITH_SCALE(Code, Scale)                               \
+#define BUILD_BCH(Name, OperandScale, Bytecode)                         \
   code = GenerateBytecodeHandler(isolate, index, Builtins::name(index), \
-                                 interpreter::Bytecode::k##Code,        \
-                                 interpreter::OperandScale::k##Scale);  \
-  if (code) {                                                           \
-    AddBuiltin(builtins, index, code);                                  \
-  }                                                                     \
-  ++index;
-
-#define BUILD_BCH(Code, ...)         \
-  BUILD_BCH_WITH_SCALE(Code, Single) \
-  BUILD_BCH_WITH_SCALE(Code, Double) \
-  BUILD_BCH_WITH_SCALE(Code, Quadruple)
+                                 OperandScale, Bytecode);               \
+  AddBuiltin(builtins, index++, code);
 
 #define BUILD_ASM(Name)                                                     \
   code = BuildWithMacroAssembler(isolate, index, Builtins::Generate_##Name, \
@@ -338,7 +332,6 @@ void SetupIsolateDelegate::SetupBuiltinsInternal(Isolate* isolate) {
 #undef BUILD_TFS
 #undef BUILD_TFH
 #undef BUILD_BCH
-#undef BUILD_BCH_WITH_SCALE
 #undef BUILD_ASM
   CHECK_EQ(Builtins::builtin_count, index);
 

@@ -15,9 +15,6 @@ namespace internal {
 
 class TemplateInfo : public Struct, public NeverReadOnlySpaceObject {
  public:
-  using NeverReadOnlySpaceObject::GetHeap;
-  using NeverReadOnlySpaceObject::GetIsolate;
-
   DECL_ACCESSORS(tag, Object)
   DECL_ACCESSORS(serial_number, Object)
   DECL_INT_ACCESSORS(number_of_properties)
@@ -59,11 +56,11 @@ class FunctionTemplateInfo : public TemplateInfo {
   DECL_ACCESSORS(prototype_template, Object)
 
   // In the case the prototype_template is Undefined we use the
-  // protoype_provider_template to retrieve the instance prototype. Either
+  // prototype_provider_template to retrieve the instance prototype. Either
   // contains an ObjectTemplateInfo or Undefined.
   DECL_ACCESSORS(prototype_provider_template, Object)
 
-  // Used to create protoype chains. The parent_template's prototype is set as
+  // Used to create prototype chains. The parent_template's prototype is set as
   // __proto__ of this FunctionTemplate's instance prototype. Is either a
   // FunctionTemplateInfo or Undefined.
   DECL_ACCESSORS(parent_template, Object)
@@ -83,7 +80,7 @@ class FunctionTemplateInfo : public TemplateInfo {
 
   // If the signature is a FunctionTemplateInfo it is used to check whether the
   // receiver calling the associated JSFunction is a compatible receiver, i.e.
-  // it is an instance of the signare FunctionTemplateInfo or any of the
+  // it is an instance of the signature FunctionTemplateInfo or any of the
   // receiver's prototypes are.
   DECL_ACCESSORS(signature, Object)
 

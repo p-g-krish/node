@@ -7,6 +7,8 @@
 
 #include "src/globals.h"
 #include "src/objects/fixed-array.h"
+#include "src/objects/js-objects.h"
+#include "src/objects/smi.h"
 
 // Has to be the last include (doesn't have include guards):
 #include "src/objects/object-macros.h"
@@ -231,7 +233,7 @@ class OrderedHashSet : public OrderedHashTable<OrderedHashSet, 1> {
                                                Handle<OrderedHashSet> table,
                                                GetKeysConversion convert);
   static HeapObject* GetEmpty(ReadOnlyRoots ro_roots);
-  static inline int GetMapRootIndex();
+  static inline RootIndex GetMapRootIndex();
   static inline bool Is(Handle<HeapObject> table);
 };
 
@@ -249,7 +251,7 @@ class OrderedHashMap : public OrderedHashTable<OrderedHashMap, 2> {
   static Object* GetHash(Isolate* isolate, Object* key);
 
   static HeapObject* GetEmpty(ReadOnlyRoots ro_roots);
-  static inline int GetMapRootIndex();
+  static inline RootIndex GetMapRootIndex();
   static inline bool Is(Handle<HeapObject> table);
 
   static const int kValueOffset = 1;
@@ -325,9 +327,6 @@ class SmallOrderedHashTable : public HeapObject {
 
   // Iterates only fields in the DataTable.
   class BodyDescriptor;
-
-  // No weak fields.
-  typedef BodyDescriptor BodyDescriptorWeak;
 
   // Returns total size in bytes required for a table of given
   // capacity.
@@ -554,7 +553,7 @@ class SmallOrderedHashSet : public SmallOrderedHashTable<SmallOrderedHashSet> {
                                               Handle<SmallOrderedHashSet> table,
                                               Handle<Object> key);
   static inline bool Is(Handle<HeapObject> table);
-  static inline int GetMapRootIndex();
+  static inline RootIndex GetMapRootIndex();
 };
 
 class SmallOrderedHashMap : public SmallOrderedHashTable<SmallOrderedHashMap> {
@@ -575,7 +574,7 @@ class SmallOrderedHashMap : public SmallOrderedHashTable<SmallOrderedHashMap> {
                                               Handle<Object> key,
                                               Handle<Object> value);
   static inline bool Is(Handle<HeapObject> table);
-  static inline int GetMapRootIndex();
+  static inline RootIndex GetMapRootIndex();
 };
 
 // TODO(gsathya): Rename this to OrderedHashTable, after we rename
@@ -623,8 +622,7 @@ class JSCollectionIterator : public JSObject {
   // [index]: The index into the data table.
   DECL_ACCESSORS(index, Object)
 
-  // Dispatched behavior.
-  DECL_PRINTER(JSCollectionIterator)
+  void JSCollectionIteratorPrint(std::ostream& os, const char* name);
 
   static const int kTableOffset = JSObject::kHeaderSize;
   static const int kIndexOffset = kTableOffset + kPointerSize;

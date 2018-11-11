@@ -21,6 +21,7 @@
 #include "src/machine-type.h"
 #include "src/macro-assembler.h"
 #include "src/objects-inl.h"
+#include "src/objects/smi.h"
 #include "src/utils.h"
 #include "src/zone/zone.h"
 
@@ -61,10 +62,11 @@ CodeAssemblerState::CodeAssemblerState(Isolate* isolate, Zone* zone,
                                        int32_t builtin_index)
     : CodeAssemblerState(
           isolate, zone,
-          Linkage::GetJSCallDescriptor(zone, false, parameter_count,
-                                       kind == Code::BUILTIN
-                                           ? CallDescriptor::kPushArgumentCount
-                                           : CallDescriptor::kNoFlags),
+          Linkage::GetJSCallDescriptor(
+              zone, false, parameter_count,
+              (kind == Code::BUILTIN ? CallDescriptor::kPushArgumentCount
+                                     : CallDescriptor::kNoFlags) |
+                  CallDescriptor::kCanUseRoots),
           kind, name, poisoning_level, 0, builtin_index) {}
 
 CodeAssemblerState::CodeAssemblerState(Isolate* isolate, Zone* zone,
@@ -84,13 +86,13 @@ CodeAssemblerState::CodeAssemblerState(Isolate* isolate, Zone* zone,
       code_generated_(false),
       variables_(zone) {}
 
-CodeAssemblerState::~CodeAssemblerState() {}
+CodeAssemblerState::~CodeAssemblerState() = default;
 
 int CodeAssemblerState::parameter_count() const {
   return static_cast<int>(raw_assembler_->call_descriptor()->ParameterCount());
 }
 
-CodeAssembler::~CodeAssembler() {}
+CodeAssembler::~CodeAssembler() = default;
 
 #if DEBUG
 void CodeAssemblerState::PrintCurrentBlock(std::ostream& os) {
@@ -274,9 +276,9 @@ TNode<Number> CodeAssembler::NumberConstant(double value) {
   }
 }
 
-TNode<Smi> CodeAssembler::SmiConstant(Smi* value) {
-  return UncheckedCast<Smi>(
-      BitcastWordToTaggedSigned(IntPtrConstant(bit_cast<intptr_t>(value))));
+TNode<Smi> CodeAssembler::SmiConstant(Smi value) {
+  return UncheckedCast<Smi>(BitcastWordToTaggedSigned(
+      IntPtrConstant(static_cast<intptr_t>(value.ptr()))));
 }
 
 TNode<Smi> CodeAssembler::SmiConstant(int value) {
@@ -295,7 +297,9 @@ TNode<String> CodeAssembler::StringConstant(const char* str) {
 }
 
 TNode<Oddball> CodeAssembler::BooleanConstant(bool value) {
-  return UncheckedCast<Oddball>(raw_assembler()->BooleanConstant(value));
+  Handle<Object> object = isolate()->factory()->ToBoolean(value);
+  return UncheckedCast<Oddball>(
+      raw_assembler()->HeapConstant(Handle<HeapObject>::cast(object)));
 }
 
 TNode<ExternalReference> CodeAssembler::ExternalConstant(
@@ -309,7 +313,7 @@ TNode<Float64T> CodeAssembler::Float64Constant(double value) {
 }
 
 TNode<HeapNumber> CodeAssembler::NaNConstant() {
-  return UncheckedCast<HeapNumber>(LoadRoot(Heap::kNanValueRootIndex));
+  return UncheckedCast<HeapNumber>(LoadRoot(RootIndex::kNanValue));
 }
 
 bool CodeAssembler::ToInt32Constant(Node* node, int32_t& out_value) {
@@ -339,7 +343,7 @@ bool CodeAssembler::ToInt64Constant(Node* node, int64_t& out_value) {
   return m.HasValue();
 }
 
-bool CodeAssembler::ToSmiConstant(Node* node, Smi*& out_value) {
+bool CodeAssembler::ToSmiConstant(Node* node, Smi* out_value) {
   if (node->opcode() == IrOpcode::kBitcastWordToTaggedSigned) {
     node = node->InputAt(0);
   }
@@ -348,7 +352,7 @@ bool CodeAssembler::ToSmiConstant(Node* node, Smi*& out_value) {
     intptr_t value = m.Value();
     // Make sure that the value is actually a smi
     CHECK_EQ(0, value & ((static_cast<intptr_t>(1) << kSmiShiftSize) - 1));
-    out_value = Smi::cast(bit_cast<Object*>(value));
+    *out_value = Smi(static_cast<Address>(value));
     return true;
   }
   return false;
@@ -511,6 +515,23 @@ TNode<WordT> CodeAssembler::IntPtrAdd(SloppyTNode<WordT> left,
     }
   }
   return UncheckedCast<WordT>(raw_assembler()->IntPtrAdd(left, right));
+}
+
+TNode<IntPtrT> CodeAssembler::IntPtrDiv(TNode<IntPtrT> left,
+                                        TNode<IntPtrT> right) {
+  intptr_t left_constant;
+  bool is_left_constant = ToIntPtrConstant(left, left_constant);
+  intptr_t right_constant;
+  bool is_right_constant = ToIntPtrConstant(right, right_constant);
+  if (is_right_constant) {
+    if (is_left_constant) {
+      return IntPtrConstant(left_constant / right_constant);
+    }
+    if (base::bits::IsPowerOfTwo(right_constant)) {
+      return WordSar(left, WhichPowerOf2(right_constant));
+    }
+  }
+  return UncheckedCast<IntPtrT>(raw_assembler()->IntPtrDiv(left, right));
 }
 
 TNode<WordT> CodeAssembler::IntPtrSub(SloppyTNode<WordT> left,
@@ -924,6 +945,17 @@ TNode<UintPtrT> CodeAssembler::ChangeFloat64ToUintPtr(
       raw_assembler()->ChangeFloat64ToUint32(value));
 }
 
+TNode<Float64T> CodeAssembler::ChangeUintPtrToFloat64(TNode<UintPtrT> value) {
+  if (raw_assembler()->machine()->Is64()) {
+    // TODO(turbofan): Maybe we should introduce a ChangeUint64ToFloat64
+    // machine operator to TurboFan here?
+    return ReinterpretCast<Float64T>(
+        raw_assembler()->RoundUint64ToFloat64(value));
+  }
+  return ReinterpretCast<Float64T>(
+      raw_assembler()->ChangeUint32ToFloat64(value));
+}
+
 Node* CodeAssembler::RoundIntPtrToFloat64(Node* value) {
   if (raw_assembler()->machine()->Is64()) {
     return raw_assembler()->RoundInt64ToFloat64(value);
@@ -952,9 +984,9 @@ Node* CodeAssembler::AtomicLoad(MachineType rep, Node* base, Node* offset) {
   return raw_assembler()->AtomicLoad(rep, base, offset);
 }
 
-TNode<Object> CodeAssembler::LoadRoot(Heap::RootListIndex root_index) {
-  if (isolate()->heap()->RootCanBeTreatedAsConstant(root_index)) {
-    Handle<Object> root = isolate()->heap()->root_handle(root_index);
+TNode<Object> CodeAssembler::LoadRoot(RootIndex root_index) {
+  if (RootsTable::IsImmortalImmovable(root_index)) {
+    Handle<Object> root = isolate()->root_handle(root_index);
     if (root->IsSmi()) {
       return SmiConstant(Smi::cast(*root));
     } else {
@@ -965,10 +997,11 @@ TNode<Object> CodeAssembler::LoadRoot(Heap::RootListIndex root_index) {
   // TODO(jgruber): In theory we could generate better code for this by
   // letting the macro assembler decide how to load from the roots list. In most
   // cases, it would boil down to loading from a fixed kRootRegister offset.
-  Node* roots_array_start =
-      ExternalConstant(ExternalReference::roots_array_start(isolate()));
-  return UncheckedCast<Object>(Load(MachineType::AnyTagged(), roots_array_start,
-                                    IntPtrConstant(root_index * kPointerSize)));
+  Node* isolate_root =
+      ExternalConstant(ExternalReference::isolate_root(isolate()));
+  int offset = IsolateData::root_slot_offset(root_index);
+  return UncheckedCast<Object>(
+      Load(MachineType::AnyTagged(), isolate_root, IntPtrConstant(offset)));
 }
 
 Node* CodeAssembler::Store(Node* base, Node* value) {
@@ -998,14 +1031,16 @@ Node* CodeAssembler::StoreNoWriteBarrier(MachineRepresentation rep, Node* base,
 }
 
 Node* CodeAssembler::AtomicStore(MachineRepresentation rep, Node* base,
-                                 Node* offset, Node* value) {
-  return raw_assembler()->AtomicStore(rep, base, offset, value);
+                                 Node* offset, Node* value, Node* value_high) {
+  return raw_assembler()->AtomicStore(rep, base, offset, value, value_high);
 }
 
-#define ATOMIC_FUNCTION(name)                                        \
-  Node* CodeAssembler::Atomic##name(MachineType type, Node* base,    \
-                                    Node* offset, Node* value) {     \
-    return raw_assembler()->Atomic##name(type, base, offset, value); \
+#define ATOMIC_FUNCTION(name)                                       \
+  Node* CodeAssembler::Atomic##name(MachineType type, Node* base,   \
+                                    Node* offset, Node* value,      \
+                                    Node* value_high) {             \
+    return raw_assembler()->Atomic##name(type, base, offset, value, \
+                                         value_high);               \
   }
 ATOMIC_FUNCTION(Exchange);
 ATOMIC_FUNCTION(Add);
@@ -1017,17 +1052,20 @@ ATOMIC_FUNCTION(Xor);
 
 Node* CodeAssembler::AtomicCompareExchange(MachineType type, Node* base,
                                            Node* offset, Node* old_value,
-                                           Node* new_value) {
-  return raw_assembler()->AtomicCompareExchange(type, base, offset, old_value,
-                                                new_value);
+                                           Node* new_value,
+                                           Node* old_value_high,
+                                           Node* new_value_high) {
+  return raw_assembler()->AtomicCompareExchange(
+      type, base, offset, old_value, old_value_high, new_value, new_value_high);
 }
 
-Node* CodeAssembler::StoreRoot(Heap::RootListIndex root_index, Node* value) {
-  DCHECK(Heap::RootCanBeWrittenAfterInitialization(root_index));
-  Node* roots_array_start =
-      ExternalConstant(ExternalReference::roots_array_start(isolate()));
-  return StoreNoWriteBarrier(MachineRepresentation::kTagged, roots_array_start,
-                             IntPtrConstant(root_index * kPointerSize), value);
+Node* CodeAssembler::StoreRoot(RootIndex root_index, Node* value) {
+  DCHECK(!RootsTable::IsImmortalImmovable(root_index));
+  Node* isolate_root =
+      ExternalConstant(ExternalReference::isolate_root(isolate()));
+  int offset = IsolateData::root_slot_offset(root_index);
+  return StoreNoWriteBarrier(MachineRepresentation::kTagged, isolate_root,
+                             IntPtrConstant(offset), value);
 }
 
 Node* CodeAssembler::Retain(Node* value) {
@@ -1035,6 +1073,7 @@ Node* CodeAssembler::Retain(Node* value) {
 }
 
 Node* CodeAssembler::Projection(int index, Node* value) {
+  DCHECK(index < value->op()->ValueOutputCount());
   return raw_assembler()->Projection(index, value);
 }
 
@@ -1045,6 +1084,8 @@ void CodeAssembler::GotoIfException(Node* node, Label* if_exception,
     return;
   }
 
+  // No catch handlers should be active if we're using catch labels
+  DCHECK_EQ(state()->exception_handler_labels_.size(), 0);
   DCHECK(!node->op()->HasProperty(Operator::kNoThrow));
 
   Label success(this), exception(this, Label::kDeferred);
@@ -1061,6 +1102,29 @@ void CodeAssembler::GotoIfException(Node* node, Label* if_exception,
   }
   Goto(if_exception);
 
+  Bind(&success);
+}
+
+void CodeAssembler::HandleException(Node* node) {
+  if (state_->exception_handler_labels_.size() == 0) return;
+  CodeAssemblerExceptionHandlerLabel* label =
+      state_->exception_handler_labels_.back();
+
+  if (node->op()->HasProperty(Operator::kNoThrow)) {
+    return;
+  }
+
+  Label success(this), exception(this, Label::kDeferred);
+  success.MergeVariables();
+  exception.MergeVariables();
+
+  raw_assembler()->Continuations(node, success.label_, exception.label_);
+
+  Bind(&exception);
+  const Operator* op = raw_assembler()->common()->IfException();
+  Node* exception_value = raw_assembler()->AddNode(op, node, node);
+  label->AddInputs({UncheckedCast<Object>(exception_value)});
+  Goto(label->plain_label());
   Bind(&success);
 }
 
@@ -1114,6 +1178,7 @@ TNode<Object> CodeAssembler::CallRuntimeWithCEntryImpl(
   CallPrologue();
   Node* return_value =
       raw_assembler()->CallN(call_descriptor, inputs.size(), inputs.data());
+  HandleException(return_value);
   CallEpilogue();
   return UncheckedCast<Object>(return_value);
 }
@@ -1169,6 +1234,7 @@ Node* CodeAssembler::CallStubN(const CallInterfaceDescriptor& descriptor,
   CallPrologue();
   Node* return_value =
       raw_assembler()->CallN(call_descriptor, input_count, inputs);
+  HandleException(return_value);
   CallEpilogue();
   return return_value;
 }
@@ -1392,8 +1458,8 @@ void CodeAssembler::Branch(SloppyTNode<IntegralT> condition, Label* true_label,
 }
 
 void CodeAssembler::Branch(TNode<BoolT> condition,
-                           std::function<void()> true_body,
-                           std::function<void()> false_body) {
+                           const std::function<void()>& true_body,
+                           const std::function<void()>& false_body) {
   int32_t constant;
   if (ToInt32Constant(condition, constant)) {
     return constant ? true_body() : false_body();
@@ -1410,7 +1476,7 @@ void CodeAssembler::Branch(TNode<BoolT> condition,
 }
 
 void CodeAssembler::Branch(TNode<BoolT> condition, Label* true_label,
-                           std::function<void()> false_body) {
+                           const std::function<void()>& false_body) {
   int32_t constant;
   if (ToInt32Constant(condition, constant)) {
     return constant ? Goto(true_label) : false_body();
@@ -1423,7 +1489,7 @@ void CodeAssembler::Branch(TNode<BoolT> condition, Label* true_label,
 }
 
 void CodeAssembler::Branch(TNode<BoolT> condition,
-                           std::function<void()> true_body,
+                           const std::function<void()>& true_body,
                            Label* false_label) {
   int32_t constant;
   if (ToInt32Constant(condition, constant)) {
@@ -1465,6 +1531,10 @@ Factory* CodeAssembler::factory() const { return isolate()->factory(); }
 
 Zone* CodeAssembler::zone() const { return raw_assembler()->zone(); }
 
+bool CodeAssembler::IsExceptionHandlerActive() const {
+  return state_->exception_handler_labels_.size() != 0;
+}
+
 RawMachineAssembler* CodeAssembler::raw_assembler() const {
   return state_->raw_assembler_.get();
 }
@@ -1475,13 +1545,14 @@ RawMachineAssembler* CodeAssembler::raw_assembler() const {
 // properly be verified.
 class CodeAssemblerVariable::Impl : public ZoneObject {
  public:
-  explicit Impl(MachineRepresentation rep)
+  explicit Impl(MachineRepresentation rep, CodeAssemblerState::VariableId id)
       :
 #if DEBUG
         debug_info_(AssemblerDebugInfo(nullptr, nullptr, -1)),
 #endif
         value_(nullptr),
-        rep_(rep) {
+        rep_(rep),
+        var_id_(id) {
   }
 
 #if DEBUG
@@ -1492,13 +1563,25 @@ class CodeAssemblerVariable::Impl : public ZoneObject {
 
   AssemblerDebugInfo debug_info_;
 #endif  // DEBUG
+  bool operator<(const CodeAssemblerVariable::Impl& other) const {
+    return var_id_ < other.var_id_;
+  }
   Node* value_;
   MachineRepresentation rep_;
+  CodeAssemblerState::VariableId var_id_;
 };
+
+bool CodeAssemblerVariable::ImplComparator::operator()(
+    const CodeAssemblerVariable::Impl* a,
+    const CodeAssemblerVariable::Impl* b) const {
+  return *a < *b;
+}
 
 CodeAssemblerVariable::CodeAssemblerVariable(CodeAssembler* assembler,
                                              MachineRepresentation rep)
-    : impl_(new (assembler->zone()) Impl(rep)), state_(assembler->state()) {
+    : impl_(new (assembler->zone())
+                Impl(rep, assembler->state()->NextVariableId())),
+      state_(assembler->state()) {
   state_->variables_.insert(impl_);
 }
 
@@ -1513,7 +1596,9 @@ CodeAssemblerVariable::CodeAssemblerVariable(CodeAssembler* assembler,
 CodeAssemblerVariable::CodeAssemblerVariable(CodeAssembler* assembler,
                                              AssemblerDebugInfo debug_info,
                                              MachineRepresentation rep)
-    : impl_(new (assembler->zone()) Impl(rep)), state_(assembler->state()) {
+    : impl_(new (assembler->zone())
+                Impl(rep, assembler->state()->NextVariableId())),
+      state_(assembler->state()) {
   impl_->set_debug_info(debug_info);
   state_->variables_.insert(impl_);
 }
@@ -1735,21 +1820,68 @@ void CodeAssemblerLabel::UpdateVariablesAfterBind() {
   bound_ = true;
 }
 
+void CodeAssemblerParameterizedLabelBase::AddInputs(std::vector<Node*> inputs) {
+  if (!phi_nodes_.empty()) {
+    DCHECK_EQ(inputs.size(), phi_nodes_.size());
+    for (size_t i = 0; i < inputs.size(); ++i) {
+      state_->raw_assembler_->AppendPhiInput(phi_nodes_[i], inputs[i]);
+    }
+  } else {
+    DCHECK_EQ(inputs.size(), phi_inputs_.size());
+    for (size_t i = 0; i < inputs.size(); ++i) {
+      phi_inputs_[i].push_back(inputs[i]);
+    }
+  }
+}
+
+Node* CodeAssemblerParameterizedLabelBase::CreatePhi(
+    MachineRepresentation rep, const std::vector<Node*>& inputs) {
+  for (Node* input : inputs) {
+    // We use {nullptr} as a sentinel for an uninitialized value. We must not
+    // create phi nodes for these.
+    if (input == nullptr) return nullptr;
+  }
+  return state_->raw_assembler_->Phi(rep, static_cast<int>(inputs.size()),
+                                     &inputs.front());
+}
+
+const std::vector<Node*>& CodeAssemblerParameterizedLabelBase::CreatePhis(
+    std::vector<MachineRepresentation> representations) {
+  DCHECK(is_used());
+  DCHECK(phi_nodes_.empty());
+  phi_nodes_.reserve(phi_inputs_.size());
+  DCHECK_EQ(representations.size(), phi_inputs_.size());
+  for (size_t i = 0; i < phi_inputs_.size(); ++i) {
+    phi_nodes_.push_back(CreatePhi(representations[i], phi_inputs_[i]));
+  }
+  return phi_nodes_;
+}
+
+void CodeAssemblerState::PushExceptionHandler(
+    CodeAssemblerExceptionHandlerLabel* label) {
+  exception_handler_labels_.push_back(label);
+}
+
+void CodeAssemblerState::PopExceptionHandler() {
+  exception_handler_labels_.pop_back();
+}
+
 }  // namespace compiler
 
-Smi* CheckObjectType(Object* value, Smi* type, String* location) {
+Address CheckObjectType(Object* value, Address raw_type, String* location) {
 #ifdef DEBUG
+  Smi type(raw_type);
   const char* expected;
   switch (static_cast<ObjectType>(type->value())) {
-#define TYPE_CASE(Name)                            \
-  case ObjectType::k##Name:                        \
-    if (value->Is##Name()) return Smi::FromInt(0); \
-    expected = #Name;                              \
+#define TYPE_CASE(Name)                                  \
+  case ObjectType::k##Name:                              \
+    if (value->Is##Name()) return Smi::FromInt(0).ptr(); \
+    expected = #Name;                                    \
     break;
-#define TYPE_STRUCT_CASE(NAME, Name, name)         \
-  case ObjectType::k##Name:                        \
-    if (value->Is##Name()) return Smi::FromInt(0); \
-    expected = #Name;                              \
+#define TYPE_STRUCT_CASE(NAME, Name, name)               \
+  case ObjectType::k##Name:                              \
+    if (value->Is##Name()) return Smi::FromInt(0).ptr(); \
+    expected = #Name;                                    \
     break;
 
     TYPE_CASE(Object)

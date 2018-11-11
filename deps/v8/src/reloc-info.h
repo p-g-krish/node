@@ -57,7 +57,6 @@ class RelocInfo {
     RELATIVE_CODE_TARGET,  // LAST_CODE_TARGET_MODE
     EMBEDDED_OBJECT,       // LAST_GCED_ENUM
 
-    JS_TO_WASM_CALL,
     WASM_CALL,  // FIRST_SHAREABLE_RELOC_MODE
     WASM_STUB_CALL,
 
@@ -137,6 +136,7 @@ class RelocInfo {
     return mode == RUNTIME_ENTRY;
   }
   static constexpr bool IsWasmCall(Mode mode) { return mode == WASM_CALL; }
+  static constexpr bool IsWasmReference(Mode mode) { return mode == WASM_CALL; }
   static constexpr bool IsWasmStubCall(Mode mode) {
     return mode == WASM_STUB_CALL;
   }
@@ -163,15 +163,6 @@ class RelocInfo {
     return mode == OFF_HEAP_TARGET;
   }
   static constexpr bool IsNone(Mode mode) { return mode == NONE; }
-  static constexpr bool IsWasmReference(Mode mode) {
-    return IsWasmPtrReference(mode);
-  }
-  static constexpr bool IsJsToWasmCall(Mode mode) {
-    return mode == JS_TO_WASM_CALL;
-  }
-  static constexpr bool IsWasmPtrReference(Mode mode) {
-    return mode == WASM_CALL || mode == JS_TO_WASM_CALL;
-  }
 
   static bool IsOnlyForSerializer(Mode mode) {
 #ifdef V8_TARGET_ARCH_IA32
@@ -221,15 +212,12 @@ class RelocInfo {
 
   Address wasm_call_address() const;
   Address wasm_stub_call_address() const;
-  Address js_to_wasm_address() const;
 
   uint32_t wasm_call_tag() const;
 
   void set_wasm_call_address(
       Address, ICacheFlushMode icache_flush_mode = FLUSH_ICACHE_IF_NEEDED);
   void set_wasm_stub_call_address(
-      Address, ICacheFlushMode icache_flush_mode = FLUSH_ICACHE_IF_NEEDED);
-  void set_js_to_wasm_address(
       Address, ICacheFlushMode icache_flush_mode = FLUSH_ICACHE_IF_NEEDED);
 
   void set_target_address(
@@ -341,7 +329,7 @@ class RelocInfo {
 
 // RelocInfoWriter serializes a stream of relocation info. It writes towards
 // lower addresses.
-class RelocInfoWriter BASE_EMBEDDED {
+class RelocInfoWriter {
  public:
   RelocInfoWriter() : pos_(nullptr), last_pc_(nullptr) {}
 
@@ -402,7 +390,6 @@ class RelocIterator : public Malloced {
                          Vector<const byte> reloc_info, Address const_pool,
                          int mode_mask = -1);
   RelocIterator(RelocIterator&&) = default;
-  RelocIterator& operator=(RelocIterator&&) = default;
 
   // Iteration
   bool done() const { return done_; }

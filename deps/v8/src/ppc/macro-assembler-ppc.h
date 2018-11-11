@@ -7,6 +7,7 @@
 
 #include "src/assembler.h"
 #include "src/bailout-reason.h"
+#include "src/contexts.h"
 #include "src/double.h"
 #include "src/globals.h"
 #include "src/ppc/assembler-ppc.h"
@@ -39,6 +40,7 @@ constexpr Register kRuntimeCallFunctionRegister = r4;
 constexpr Register kRuntimeCallArgCountRegister = r3;
 constexpr Register kRuntimeCallArgvRegister = r5;
 constexpr Register kWasmInstanceRegister = r10;
+constexpr Register kWasmCompileLazyFuncIndexRegister = r15;
 
 // ----------------------------------------------------------------------------
 // Static helper functions
@@ -90,6 +92,9 @@ Register GetRegisterThatIsNotOneOf(Register reg1, Register reg2 = no_reg,
 
 class V8_EXPORT_PRIVATE TurboAssembler : public TurboAssemblerBase {
  public:
+  TurboAssembler(const AssemblerOptions& options, void* buffer, int buffer_size)
+      : TurboAssemblerBase(options, buffer, buffer_size) {}
+
   TurboAssembler(Isolate* isolate, const AssemblerOptions& options,
                  void* buffer, int buffer_size,
                  CodeObjectRequired create_code_object)
@@ -163,10 +168,8 @@ class V8_EXPORT_PRIVATE TurboAssembler : public TurboAssemblerBase {
   static int ActivationFrameAlignment();
 
   void InitializeRootRegister() {
-    ExternalReference roots_array_start =
-        ExternalReference::roots_array_start(isolate());
-    mov(kRootRegister, Operand(roots_array_start));
-    addi(kRootRegister, kRootRegister, Operand(kRootRegisterBias));
+    ExternalReference isolate_root = ExternalReference::isolate_root(isolate());
+    mov(kRootRegister, Operand(isolate_root));
   }
 
   // These exist to provide portability between 32 and 64bit
@@ -184,7 +187,7 @@ class V8_EXPORT_PRIVATE TurboAssembler : public TurboAssemblerBase {
   // load a literal signed int value <value> to GPR <dst>
   void LoadIntLiteral(Register dst, int value);
   // load an SMI value <value> to GPR <dst>
-  void LoadSmiLiteral(Register dst, Smi* smi);
+  void LoadSmiLiteral(Register dst, Smi smi);
 
   void LoadSingle(DoubleRegister dst, const MemOperand& mem,
                   Register scratch = no_reg);
@@ -219,7 +222,7 @@ class V8_EXPORT_PRIVATE TurboAssembler : public TurboAssemblerBase {
   void Push(Register src) { push(src); }
   // Push a handle.
   void Push(Handle<HeapObject> handle);
-  void Push(Smi* smi);
+  void Push(Smi smi);
 
   // Push two registers.  Pushes leftmost register first (to highest address).
   void Push(Register src1, Register src2) {
@@ -295,6 +298,9 @@ class V8_EXPORT_PRIVATE TurboAssembler : public TurboAssemblerBase {
   void CallRecordWriteStub(Register object, Register address,
                            RememberedSetAction remembered_set_action,
                            SaveFPRegsMode fp_mode);
+  void CallRecordWriteStub(Register object, Register address,
+                           RememberedSetAction remembered_set_action,
+                           SaveFPRegsMode fp_mode, Address wasm_target);
 
   void MultiPush(RegList regs, Register location = sp);
   void MultiPop(RegList regs, Register location = sp);
@@ -321,11 +327,10 @@ class V8_EXPORT_PRIVATE TurboAssembler : public TurboAssemblerBase {
                      Register exclusion3 = no_reg);
 
   // Load an object from the root table.
-  void LoadRoot(Register destination, Heap::RootListIndex index) override {
+  void LoadRoot(Register destination, RootIndex index) override {
     LoadRoot(destination, index, al);
   }
-  void LoadRoot(Register destination, Heap::RootListIndex index,
-                Condition cond);
+  void LoadRoot(Register destination, RootIndex index, Condition cond);
 
   void SwapP(Register src, Register dst, Register scratch);
   void SwapP(Register src, MemOperand dst, Register scratch);
@@ -483,7 +488,7 @@ class V8_EXPORT_PRIVATE TurboAssembler : public TurboAssemblerBase {
   void MovIntToFloat(DoubleRegister dst, Register src);
   void MovFloatToInt(Register dst, DoubleRegister src);
   // Register move. May do nothing if the registers are identical.
-  void Move(Register dst, Smi* smi) { LoadSmiLiteral(dst, smi); }
+  void Move(Register dst, Smi smi) { LoadSmiLiteral(dst, smi); }
   void Move(Register dst, Handle<HeapObject> value);
   void Move(Register dst, ExternalReference reference);
   void Move(Register dst, Register src, Condition cond = al);
@@ -657,15 +662,23 @@ class V8_EXPORT_PRIVATE TurboAssembler : public TurboAssemblerBase {
                                 int num_double_arguments);
   void CallCFunctionHelper(Register function, int num_reg_arguments,
                            int num_double_arguments);
+  void CallRecordWriteStub(Register object, Register address,
+                           RememberedSetAction remembered_set_action,
+                           SaveFPRegsMode fp_mode, Handle<Code> code_target,
+                           Address wasm_target);
 };
 
 // MacroAssembler implements a collection of frequently used acros.
 class MacroAssembler : public TurboAssembler {
  public:
+  MacroAssembler(const AssemblerOptions& options, void* buffer, int size)
+      : TurboAssembler(options, buffer, size) {}
+
   MacroAssembler(Isolate* isolate, void* buffer, int size,
                  CodeObjectRequired create_code_object)
       : MacroAssembler(isolate, AssemblerOptions::Default(isolate), buffer,
                        size, create_code_object) {}
+
   MacroAssembler(Isolate* isolate, const AssemblerOptions& options,
                  void* buffer, int size, CodeObjectRequired create_code_object);
 
@@ -774,16 +787,14 @@ class MacroAssembler : public TurboAssembler {
   void Or(Register ra, Register rs, const Operand& rb, RCBit rc = LeaveRC);
   void Xor(Register ra, Register rs, const Operand& rb, RCBit rc = LeaveRC);
 
-  void AddSmiLiteral(Register dst, Register src, Smi* smi, Register scratch);
-  void SubSmiLiteral(Register dst, Register src, Smi* smi, Register scratch);
-  void CmpSmiLiteral(Register src1, Smi* smi, Register scratch,
+  void AddSmiLiteral(Register dst, Register src, Smi smi, Register scratch);
+  void SubSmiLiteral(Register dst, Register src, Smi smi, Register scratch);
+  void CmpSmiLiteral(Register src1, Smi smi, Register scratch,
                      CRegister cr = cr7);
-  void CmplSmiLiteral(Register src1, Smi* smi, Register scratch,
+  void CmplSmiLiteral(Register src1, Smi smi, Register scratch,
                       CRegister cr = cr7);
-  void AndSmiLiteral(Register dst, Register src, Smi* smi, Register scratch,
+  void AndSmiLiteral(Register dst, Register src, Smi smi, Register scratch,
                      RCBit rc = LeaveRC);
-
-
 
   // ---------------------------------------------------------------------------
   // JavaScript invokes
@@ -846,21 +857,20 @@ class MacroAssembler : public TurboAssembler {
 
   // Compare the object in a register to a value from the root list.
   // Uses the ip register as scratch.
-  void CompareRoot(Register obj, Heap::RootListIndex index);
-  void PushRoot(Heap::RootListIndex index) {
+  void CompareRoot(Register obj, RootIndex index);
+  void PushRoot(RootIndex index) {
     LoadRoot(r0, index);
     Push(r0);
   }
 
   // Compare the object in a register to a value and jump if they are equal.
-  void JumpIfRoot(Register with, Heap::RootListIndex index, Label* if_equal) {
+  void JumpIfRoot(Register with, RootIndex index, Label* if_equal) {
     CompareRoot(with, index);
     beq(if_equal);
   }
 
   // Compare the object in a register to a value and jump if they are not equal.
-  void JumpIfNotRoot(Register with, Heap::RootListIndex index,
-                     Label* if_not_equal) {
+  void JumpIfNotRoot(Register with, RootIndex index, Label* if_not_equal) {
     CompareRoot(with, index);
     bne(if_not_equal);
   }

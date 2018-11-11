@@ -86,7 +86,7 @@ class FrontendChannelImpl : public v8_inspector::V8Inspector::Channel {
       : task_runner_(task_runner),
         context_group_id_(context_group_id),
         function_(isolate, function) {}
-  virtual ~FrontendChannelImpl() = default;
+  ~FrontendChannelImpl() override = default;
 
   void set_session_id(int session_id) { session_id_ = session_id; }
 
@@ -109,7 +109,7 @@ class FrontendChannelImpl : public v8_inspector::V8Inspector::Channel {
     SendMessageTask(FrontendChannelImpl* channel,
                     const std::vector<uint16_t>& message)
         : channel_(channel), message_(message) {}
-    virtual ~SendMessageTask() {}
+    ~SendMessageTask() override = default;
     bool is_priority_task() final { return false; }
 
    private:
@@ -142,7 +142,7 @@ void RunSyncTask(TaskRunner* task_runner, T callback) {
    public:
     SyncTask(v8::base::Semaphore* ready_semaphore, T callback)
         : ready_semaphore_(ready_semaphore), callback_(callback) {}
-    virtual ~SyncTask() = default;
+    ~SyncTask() override = default;
     bool is_priority_task() final { return true; }
 
    private:
@@ -182,7 +182,7 @@ void RunAsyncTask(TaskRunner* task_runner,
   class AsyncTask : public TaskRunner::Task {
    public:
     explicit AsyncTask(TaskRunner::Task* inner) : inner_(inner) {}
-    virtual ~AsyncTask() = default;
+    ~AsyncTask() override = default;
     bool is_priority_task() override { return inner_->is_priority_task(); }
     void Run(IsolateData* data) override {
       data->AsyncTaskStarted(inner_.get());
@@ -216,8 +216,7 @@ class ExecuteStringTask : public TaskRunner::Task {
   ExecuteStringTask(const std::string& expression, int context_group_id)
       : expression_utf8_(expression), context_group_id_(context_group_id) {}
 
-  virtual ~ExecuteStringTask() {
-  }
+  ~ExecuteStringTask() override = default;
   bool is_priority_task() override { return false; }
   void Run(IsolateData* data) override {
     v8::MicrotasksScope microtasks_scope(data->isolate(),
@@ -312,6 +311,9 @@ class UtilsExtension : public IsolateData::SetupGlobalTask {
     utils->Set(ToV8String(isolate, "createContextGroup"),
                v8::FunctionTemplate::New(isolate,
                                          &UtilsExtension::CreateContextGroup));
+    utils->Set(
+        ToV8String(isolate, "resetContextGroup"),
+        v8::FunctionTemplate::New(isolate, &UtilsExtension::ResetContextGroup));
     utils->Set(
         ToV8String(isolate, "connectSession"),
         v8::FunctionTemplate::New(isolate, &UtilsExtension::ConnectSession));
@@ -527,6 +529,18 @@ class UtilsExtension : public IsolateData::SetupGlobalTask {
         v8::Int32::New(args.GetIsolate(), context_group_id));
   }
 
+  static void ResetContextGroup(
+      const v8::FunctionCallbackInfo<v8::Value>& args) {
+    if (args.Length() != 1 || !args[0]->IsInt32()) {
+      fprintf(stderr, "Internal error: resetContextGroup(context_group_id).");
+      Exit();
+    }
+    int context_group_id = args[0].As<v8::Int32>()->Value();
+    RunSyncTask(backend_runner_, [&context_group_id](IsolateData* data) {
+      data->ResetContextGroup(context_group_id);
+    });
+  }
+
   static void ConnectSession(const v8::FunctionCallbackInfo<v8::Value>& args) {
     if (args.Length() != 3 || !args[0]->IsInt32() || !args[1]->IsString() ||
         !args[2]->IsFunction()) {
@@ -595,7 +609,7 @@ class SetTimeoutTask : public TaskRunner::Task {
   SetTimeoutTask(int context_group_id, v8::Isolate* isolate,
                  v8::Local<v8::Function> function)
       : function_(isolate, function), context_group_id_(context_group_id) {}
-  virtual ~SetTimeoutTask() {}
+  ~SetTimeoutTask() override = default;
   bool is_priority_task() final { return false; }
 
  private:

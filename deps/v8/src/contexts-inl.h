@@ -9,6 +9,7 @@
 #include "src/heap/heap.h"
 #include "src/objects-inl.h"
 #include "src/objects/dictionary.h"
+#include "src/objects/js-weak-refs-inl.h"
 #include "src/objects/map-inl.h"
 #include "src/objects/regexp-match-info.h"
 #include "src/objects/scope-info.h"
@@ -99,6 +100,10 @@ bool Context::IsDebugEvaluateContext() const {
   return map()->instance_type() == DEBUG_EVALUATE_CONTEXT_TYPE;
 }
 
+bool Context::IsAwaitContext() const {
+  return map()->instance_type() == AWAIT_CONTEXT_TYPE;
+}
+
 bool Context::IsBlockContext() const {
   return map()->instance_type() == BLOCK_CONTEXT_TYPE;
 }
@@ -121,15 +126,15 @@ bool Context::HasSameSecurityTokenAs(Context* that) const {
 }
 
 #define NATIVE_CONTEXT_FIELD_ACCESSORS(index, type, name) \
-  void Context::set_##name(type* value) {                 \
+  void Context::set_##name(type##ArgType value) {         \
     DCHECK(IsNativeContext());                            \
     set(index, value);                                    \
   }                                                       \
-  bool Context::is_##name(type* value) const {            \
+  bool Context::is_##name(type##ArgType value) const {    \
     DCHECK(IsNativeContext());                            \
     return type::cast(get(index)) == value;               \
   }                                                       \
-  type* Context::name() const {                           \
+  type##ArgType Context::name() const {                   \
     DCHECK(IsNativeContext());                            \
     return type::cast(get(index));                        \
   }
